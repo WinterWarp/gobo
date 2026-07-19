@@ -1,0 +1,24 @@
+#cloud-config
+package_update: true
+packages:
+  - git
+
+write_files:
+  - path: /etc/gobo.env
+    permissions: "0600"
+    content: |
+      PLANNER_BOT_TOKEN=__PLANNER_BOT_TOKEN__
+      MANAGER_BOT_TOKEN=__MANAGER_BOT_TOKEN__
+      OPENROUTER_API_KEY=__OPENROUTER_API_KEY__
+      ALLOWED_TELEGRAM_USER_ID=__TELEGRAM_USER_ID__
+
+runcmd:
+  - curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+  - useradd --system --create-home --home-dir /var/lib/gobo gobo
+  - git clone __REPO_URL__ /opt/gobo
+  - chown -R gobo:gobo /opt/gobo /etc/gobo.env
+  - chmod 600 /etc/gobo.env
+  - sudo -u gobo sh -c 'cd /opt/gobo && /usr/local/bin/uv sync'
+  - cp /opt/gobo/deploy/gobo.service /etc/systemd/system/gobo.service
+  - systemctl daemon-reload
+  - systemctl enable --now gobo

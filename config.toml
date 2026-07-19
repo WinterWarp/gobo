@@ -1,0 +1,33 @@
+timezone = "America/Chicago"
+db_path = "gobo.db"
+
+# When the Planner proactively opens the morning session.
+daily_plan_time = "06:45"
+
+# Fallback silence window when no policy is active yet (sleep).
+[sleep]
+start = "22:30"
+end = "06:40"
+
+[planner.llm]
+model = "anthropic/claude-fable-5"
+thinking_level = "high"            # none | low | medium | high
+
+[manager.llm]
+model = "anthropic/claude-fable-5"
+thinking_level = "low"
+
+[manager]
+tone = "terse_professional" # terse_professional | drill_sergeant | neutral
+# After an escalation chain exhausts (task marked unverified), how long the
+# Manager stays quiet before resuming assignment on its own.
+resume_after_exhaust_minutes = 45
+
+# Defaults the Planner starts from; it may override per-policy.
+[escalation]
+max_attempts = 3
+backoff_minutes = [10, 7, 5]
+
+[dnd]
+max_grant_minutes = 90
+max_grants_per_day = 2
