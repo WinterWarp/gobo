@@ -60,6 +60,16 @@ MIGRATIONS: list[str] = [
         detail TEXT NOT NULL DEFAULT '{}'
     );
     """,
+    """
+    CREATE TABLE memories (
+        key TEXT PRIMARY KEY,
+        category TEXT NOT NULL DEFAULT 'note',
+        content TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    );
+    """,
 ]
 
 
@@ -131,11 +141,22 @@ class Database:
             (bot, role, text, ts),
         )
 
-    async def recent_messages(self, bot: str, limit: int = 40) -> list[aiosqlite.Row]:
+    async def recent_messages(
+        self, bot: str, limit: int = 40, since_id: int = 0
+    ) -> list[aiosqlite.Row]:
         rows = await self.fetchall(
-            "SELECT * FROM messages WHERE bot = ? ORDER BY id DESC LIMIT ?", (bot, limit)
+            "SELECT * FROM messages WHERE bot = ? AND id > ? ORDER BY id DESC LIMIT ?",
+            (bot, since_id, limit),
         )
         return list(reversed(rows))
+
+    async def last_event_id(self, bot: str, text: str) -> int:
+        """Id of the newest 'event' marker row (e.g. session_end, context_reset), or 0."""
+        row = await self.fetchone(
+            "SELECT MAX(id) AS id FROM messages WHERE bot = ? AND role = 'event' AND text = ?",
+            (bot, text),
+        )
+        return row["id"] if row and row["id"] else 0
 
     # --- audit ---
 
@@ -144,6 +165,30 @@ class Database:
             "INSERT INTO audit (ts, actor, event, detail) VALUES (?, ?, ?, ?)",
             (ts, actor, event, json.dumps(detail)),
         )
+
+    # --- shared memory ---
+
+    async def memories_all(self) -> list[aiosqlite.Row]:
+        return await self.fetchall("SELECT * FROM memories ORDER BY category, key")
+
+    async def memory_upsert(
+        self, key: str, category: str, content: str, source: str, ts: float
+    ) -> bool:
+        """Insert or overwrite a memory. Returns True if the key is new."""
+        existing = await self.fetchone("SELECT 1 FROM memories WHERE key = ?", (key,))
+        await self.execute(
+            "INSERT INTO memories (key, category, content, source, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET category = excluded.category, "
+            "content = excluded.content, source = excluded.source, "
+            "updated_at = excluded.updated_at",
+            (key, category, content, source, ts, ts),
+        )
+        return existing is None
+
+    async def memory_delete(self, key: str) -> bool:
+        cur = await self.execute("DELETE FROM memories WHERE key = ?", (key,))
+        return cur.rowcount > 0
 
     # --- policies ---
 

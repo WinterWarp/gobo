@@ -5,10 +5,10 @@ A two-agent system for managing your own attention, over Telegram.
 Once a day (and any time plans change — it's available 24/7), the **Planner**
 ("Good Cop", strong model) sits down with you, gathers your intentions and tasks,
 and compiles them into a **hidden enforcement policy**: time-windows, trip-wires,
-silence rules, and quietly-compressed deadlines you never see. A cheap, constant
-**Manager** ("Bad Cop") executes it — handing you one task at a time from a queue
-you can't read ahead in, checking in at task-scaled random intervals, verifying
-completion conversationally, and assigning the next.
+silence rules, and quietly-compressed deadlines the Manager enforces as the real
+thing. A cheap, constant **Manager** ("Bad Cop") executes it — handing you one
+task at a time from a queue you can't read ahead in, checking in at task-scaled
+random intervals, verifying completion conversationally, and assigning the next.
 
 The invisibility is the core bet: you can't rules-lawyer a schedule you can't
 see, so nudges land like an attentive observer reacting in the moment rather
@@ -25,10 +25,14 @@ check-in times are drawn once and persisted, so restarts neither lose nor
 duplicate pings. Inference runs through OpenRouter; each agent's model and
 thinking level is set in `config.toml`.
 
-The Manager model is kept honest **by construction**: each of its LLM calls
-receives only the current task slice, tone, and disclosure rules — never the
-queue, other tasks, or internal deadlines. It cannot leak what it was never
-given.
+Each Manager LLM call receives the current task and its terms — including the
+compressed internal deadline, which it presents to you as *the* deadline — plus
+the shared memory, but never the queue or other tasks: what it was never given,
+it cannot leak. It can also nudge its own rhythm (`set_next_checkin`) when the
+conversation warrants, on top of the policy's random heartbeat.
+
+Both agents share a persistent **memory** (durable notes plus a task inbox for
+work you mention but haven't scheduled); saves are announced in-chat with a 💾.
 
 ```
 src/gobo/
@@ -36,6 +40,7 @@ src/gobo/
   scheduler.py   DB-backed timers, accelerable clock
   models.py      the policy schema + time-window math
   llm.py         OpenRouter (OpenAI SDK) + tool loop
+  memory.py      shared memory: notes + task inbox, tools for both agents
   planner/       Good Cop: conversation, task tools, policy compilation
   manager/       Bad Cop: assignment, check-ins, escalation, trip-wires, DND
   cli.py         debug CLI — the only place the hidden policy is visible
@@ -64,7 +69,7 @@ Useful dev knobs:
 - `GOBO_TIME_SCALE=60` — virtual time runs 60× faster, so a full simulated day
   of check-ins takes minutes. `GOBO_TIME_START=2026-07-20T08:00` pins the start.
 - `uv run python -m gobo.cli policy` — inspect the hidden policy (also:
-  `tasks`, `timers`, `state`, `audit`, `messages`, `fire <timer-id>`).
+  `tasks`, `timers`, `state`, `audit`, `messages`, `memory`, `fire <timer-id>`).
   Deliberately outside both chats; don't peek in role.
 
 ## Deploy (Pulumi → DigitalOcean)

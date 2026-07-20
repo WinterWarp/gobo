@@ -247,19 +247,24 @@ async def test_replan_keeps_in_flight_task(db, clock, cfg, scheduler, engine):
     assert await scheduler.pending("checkin")
 
 
-async def test_replan_rearms_in_flight_escalation(db, clock, cfg, scheduler, engine):
+async def test_replan_resets_escalation_and_chat_context(db, clock, cfg, scheduler, engine):
     t1 = await add_task(db, clock, "write report")
     await activate(db, clock, engine, policy_dict([t1]))
     clock.advance(120)
     await scheduler.tick()
     await engine.on_checkin({"task_id": t1}, 0)
     assert await engine._get("awaiting", False)
+    assert await engine._chat_tail(20)  # assign + checkin messages are in context
 
     await activate(db, clock, engine, policy_dict([t1]))
 
-    assert await engine._get("awaiting", False)
-    assert await scheduler.pending("escalation", match={"task_id": t1})
-    assert not await scheduler.pending("checkin")
+    # the user just replanned: pre-replan asks must not read as ignored, so the
+    # escalation chain is dropped and a fresh check-in rhythm starts
+    assert not await engine._get("awaiting", False)
+    assert await engine._get("escalation_attempt", 0) == 0
+    assert not await scheduler.pending("escalation")
+    assert await scheduler.pending("checkin")
+    assert await engine._chat_tail(20) == []  # context restarts at the reset marker
 
 
 async def test_unrelated_message_does_not_confirm_task_started(
@@ -313,6 +318,60 @@ async def test_compile_rejects_bad_queue_refs(db, clock, cfg, scheduler, engine)
     await db.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (t1,))
     result = await validate_and_activate(db, clock, "America/Chicago", policy_dict([t1]), engine)
     assert result.startswith("error") and "done" in result
+
+
+async def test_user_messages_and_directives_are_timestamped(db, clock, cfg, scheduler, engine):
+    t1 = await add_task(db, clock, "write report")
+    await activate(db, clock, engine, policy_dict([t1]))
+    clock.advance(120)
+    await scheduler.tick()
+
+    # the assign directive carries the wall clock (Mon 2026-07-20 09:02 local)
+    assert engine.fake_llm.directives[0].startswith("[Mon 2026-07-20 09:02]")
+
+    engine.fake_llm.script.append({"text": "Noted."})
+    await handle_user_message(engine, "on it")
+    user_msgs = [m for m in await engine._chat_tail(10) if m["role"] == "user"]
+    assert user_msgs[-1]["content"] == "[Mon 2026-07-20 09:02] on it"
+
+
+async def test_set_next_checkin_reschedules_and_clamps(db, clock, cfg, scheduler, engine):
+    t1 = await add_task(db, clock, "write report")
+    await activate(db, clock, engine, policy_dict([t1]))
+    clock.advance(120)
+    await scheduler.tick()
+
+    result = await engine.set_next_checkin(40, "says done in 40")
+    assert "~40" in result
+    rows = await db.fetchall("SELECT * FROM timers WHERE kind='checkin' AND fired_at IS NULL")
+    assert len(rows) == 1  # the policy-drawn check-in was replaced, not stacked
+    assert rows[0]["fire_at"] == pytest.approx(clock.now() + 40 * 60)
+
+    assert "~120" in await engine.set_next_checkin(500, "way too long")
+
+    await engine._clear_current()
+    assert (await engine.set_next_checkin(30)).startswith("DENIED")
+
+
+async def test_task_slice_carries_policy_terms(db, clock, cfg, scheduler, engine):
+    t1 = await add_task(db, clock, "write report", notes="quarterly numbers")
+    raw = policy_dict([t1])
+    raw["queue"][0].update(
+        internal_deadline="2026-07-20T11:00",
+        stated_deadline="2026-07-20T17:00",
+        verify_hint="ask for the doc link",
+        guidance="outline before inbox",
+    )
+    await activate(db, clock, engine, raw)
+    policy = await engine.policy()
+    task = await engine.task_row(t1)
+
+    s = engine._task_slice(task, policy.entry_for(t1))
+    assert "Deadline: 2026-07-20T11:00" in s
+    assert "2026-07-20T17:00" in s and "never acknowledge" in s
+    assert "ask for the doc link" in s
+    assert "outline before inbox" in s
+    assert "10–20 min" in s
 
 
 async def test_internal_deadline_tripwire_fires_urgent_nudge(db, clock, cfg, scheduler, engine):

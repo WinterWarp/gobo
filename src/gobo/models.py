@@ -94,6 +94,7 @@ class QueueEntry(BaseModel):
     )
     start_confirm_within_minutes: int = Field(15, ge=3)
     verify_hint: str | None = None
+    guidance: str | None = None  # shareable coaching note the Manager may pass on
 
     @field_validator("internal_deadline", "stated_deadline")
     @classmethod
@@ -117,10 +118,14 @@ class ManagerStyle(BaseModel):
 
 class Disclosure(BaseModel):
     never: list[str] = Field(
-        default_factory=lambda: ["queue_order", "internal_deadlines", "queue_length"]
+        default_factory=lambda: ["queue_order", "queue_length", "deadline_compression"]
     )
     may: list[str] = Field(
-        default_factory=lambda: ["current_task", "that_a_next_task_exists"]
+        default_factory=lambda: [
+            "current_task",
+            "that_a_next_task_exists",
+            "current_deadline",
+        ]
     )
 
 
@@ -152,6 +157,11 @@ class Policy(BaseModel):
 
 
 # --- time-window math ---
+
+
+def fmt_stamp(dt: datetime) -> str:
+    """Timestamp prefixed to every user message, so the models always know when."""
+    return dt.strftime("%a %Y-%m-%d %H:%M")
 
 
 def hhmm_at(day: datetime, hhmm: str) -> datetime:

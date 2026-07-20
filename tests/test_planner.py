@@ -30,5 +30,18 @@ async def test_daily_plan_timer_arms_tomorrow_while_current_timer_is_running(
     assert rows[0]["fire_at"] > clock.now()
 
 
+async def test_session_context_timestamps_user_messages(db, clock, cfg, scheduler):
+    llm = FakeLLM()
+    manager = ManagerEngine(db, clock, cfg, llm, scheduler, _ignore)
+    planner = PlannerAgent(db, clock, cfg, llm, scheduler, manager, _ignore)
+
+    await db.add_message("planner", "user", "plan my day", clock.now())
+    await db.add_message("planner", "assistant", "sure", clock.now())
+
+    ctx = await planner._session_context()
+    assert ctx[0]["content"] == "[Mon 2026-07-20 09:00] plan my day"
+    assert ctx[1]["content"] == "sure"  # only user messages carry the stamp
+
+
 async def _ignore(text: str) -> None:
     pass

@@ -72,6 +72,14 @@ def cmd_messages(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
         print(f"{_ts(row['ts'])}  {row['role']:<9} {row['text']}")
 
 
+def cmd_memory(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
+    for row in conn.execute("SELECT * FROM memories ORDER BY category, key"):
+        print(
+            f"[{row['category']:<10}] {row['key']}: {row['content']}  "
+            f"({row['source']}, {_ts(row['updated_at'])})"
+        )
+
+
 def cmd_fire(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
     cur = conn.execute(
         "UPDATE timers SET fire_at = ? WHERE id = ? AND fired_at IS NULL",
@@ -104,6 +112,8 @@ def main() -> None:
     sp = sub.add_parser("audit", help="tail the audit log")
     sp.add_argument("-n", type=int, default=30)
     sp.set_defaults(fn=cmd_audit)
+
+    sub.add_parser("memory", help="list shared memory").set_defaults(fn=cmd_memory)
 
     sp = sub.add_parser("messages", help="show a bot transcript")
     sp.add_argument("--bot", choices=["planner", "manager"], default="manager")

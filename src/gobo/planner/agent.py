@@ -5,14 +5,15 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 
 from ..config import Config
 from ..db import Database
 from ..llm import LLM, Toolbox
 from ..manager.loop import ManagerEngine
-from ..models import hhmm_at
+from ..memory import add_memory_tools, memory_block
+from ..models import fmt_stamp, hhmm_at
 from ..scheduler import Clock, Scheduler
 from . import prompts
 from .compile import validate_and_activate
@@ -88,7 +89,8 @@ class PlannerAgent:
         system = await self._build_system()
         history = await self._session_context()
         if not record_user:
-            history = history + [{"role": "user", "content": user_text}]
+            stamp = fmt_stamp(self.clock.dt(self.cfg.tz))
+            history = history + [{"role": "user", "content": f"[{stamp}] {user_text}"}]
         return await self.llm.tool_loop(
             self.cfg.planner_llm, system, history, self._toolbox(), max_rounds=12
         )
@@ -112,21 +114,23 @@ class PlannerAgent:
             tasks=tasks,
             has_policy=await self.db.active_policy_json() is not None,
             manager_status=await self.manager.status_summary(),
+            memory=await memory_block(self.db),
         )
 
     async def _session_context(self) -> list[dict]:
-        """Planner transcript since the last end_session marker."""
-        marker = await self.db.fetchone(
-            "SELECT MAX(id) AS id FROM messages "
-            "WHERE bot = 'planner' AND role = 'event' AND text = 'session_end'"
-        )
-        since = marker["id"] if marker and marker["id"] else 0
-        rows = await self.db.fetchall(
-            "SELECT role, text FROM messages WHERE bot = 'planner' AND id > ? "
-            "AND role IN ('user','assistant') ORDER BY id DESC LIMIT ?",
-            (since, SESSION_CONTEXT_CAP),
-        )
-        return [{"role": r["role"], "content": r["text"]} for r in reversed(rows)]
+        """Planner transcript since the last end_session marker, user messages
+        stamped with their wall-clock time."""
+        since = await self.db.last_event_id("planner", "session_end")
+        rows = await self.db.recent_messages("planner", SESSION_CONTEXT_CAP, since_id=since)
+        history = []
+        for r in rows:
+            if r["role"] not in ("user", "assistant"):
+                continue
+            content = r["text"]
+            if r["role"] == "user":
+                content = f"[{fmt_stamp(datetime.fromtimestamp(r['ts'], self.cfg.tz))}] {content}"
+            history.append({"role": r["role"], "content": content})
+        return history
 
     # --- tools ---
 
@@ -248,4 +252,5 @@ class PlannerAgent:
             obj,
             end_session,
         )
+        add_memory_tools(tb, self.db, self.clock, self._send, "planner")
         return tb

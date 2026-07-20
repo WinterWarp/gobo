@@ -4,6 +4,8 @@ with only the tools valid for the current phase."""
 from __future__ import annotations
 
 from ..llm import Toolbox
+from ..memory import add_memory_tools, memory_block
+from ..models import fmt_stamp
 from . import prompts
 from .loop import ManagerEngine
 
@@ -127,6 +129,11 @@ def build_toolbox(engine: ManagerEngine, phase: str, verify_hint: str | None) ->
         async def grant_dnd(args: dict) -> str:
             return await engine.grant_dnd(int(args.get("minutes", 0) or 0))
 
+        async def set_next_checkin(args: dict) -> str:
+            return await engine.set_next_checkin(
+                int(args.get("minutes", 0) or 0), args.get("reason", "")
+            )
+
         tb.add(
             "grant_dnd",
             "The user asks to be left alone for a while (meeting, focus block). "
@@ -134,7 +141,23 @@ def build_toolbox(engine: ManagerEngine, phase: str, verify_hint: str | None) ->
             _MINUTES_PARAM,
             grant_dnd,
         )
+        tb.add(
+            "set_next_checkin",
+            "Move the next status check earlier or later when the conversation warrants it — "
+            "e.g. they say they'll be done in 40 minutes, or they clearly need a tighter "
+            "leash. Not a silence grant: 'leave me alone' goes through grant_dnd.",
+            {
+                "type": "object",
+                "properties": {
+                    "minutes": {"type": "integer", "minimum": 1},
+                    "reason": {"type": "string"},
+                },
+                "required": ["minutes"],
+            },
+            set_next_checkin,
+        )
 
+    add_memory_tools(tb, engine.db, engine.clock, engine._send, "manager")
     return tb
 
 
@@ -152,8 +175,10 @@ async def handle_user_message(engine: ManagerEngine, text: str) -> None:
     toolbox = build_toolbox(engine, phase, verify_hint)
     system = prompts.inbound_system(
         await engine._tone(),
-        engine._task_slice(task) if task else "",
+        engine._task_slice(task, entry) if task else "",
         phase,
+        now=fmt_stamp(engine.clock.dt(engine.cfg.tz)),
+        memory=await memory_block(engine.db),
     )
     tail = await engine._chat_tail(14)
     reply = await engine.llm.tool_loop(engine.cfg.manager_llm, system, tail, toolbox)

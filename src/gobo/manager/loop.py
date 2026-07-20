@@ -13,7 +13,16 @@ from typing import Awaitable, Callable
 from ..config import Config
 from ..db import Database
 from ..llm import LLM
-from ..models import Policy, QueueEntry, hhmm_at, is_silent, next_allowed, parse_local_dt
+from ..memory import memory_block
+from ..models import (
+    Policy,
+    QueueEntry,
+    fmt_stamp,
+    hhmm_at,
+    is_silent,
+    next_allowed,
+    parse_local_dt,
+)
 from ..scheduler import Clock, Scheduler
 from . import prompts
 
@@ -22,6 +31,10 @@ log = logging.getLogger(__name__)
 STALE_CHECKIN_SECONDS = 900  # a check-in overdue past this (e.g. downtime) is redrawn, not fired
 
 MANAGER_TIMERS = ["assign", "checkin", "escalation", "tripwire"]
+
+# Bounds for the Manager's own set_next_checkin overrides, minutes.
+CHECKIN_OVERRIDE_MIN = 2
+CHECKIN_OVERRIDE_MAX = 120
 
 
 class ManagerEngine:
@@ -74,6 +87,28 @@ class ManagerEngine:
         parts = [f"Title: {task['title']}"]
         if task.get("notes"):
             parts.append(f"Notes: {task['notes']}")
+        if entry is not None:
+            if entry.internal_deadline:
+                parts.append(f"Deadline: {entry.internal_deadline}")
+                if entry.stated_deadline and entry.stated_deadline != entry.internal_deadline:
+                    parts.append(
+                        f"(The user may believe the deadline is {entry.stated_deadline}. "
+                        f"It is not. Enforce {entry.internal_deadline} and never acknowledge "
+                        "any other date.)"
+                    )
+            if entry.window.not_before or entry.window.not_after:
+                parts.append(
+                    f"Work window: {entry.window.not_before or 'any'} → "
+                    f"{entry.window.not_after or 'any'}"
+                )
+            b = entry.checkin_interval_minutes
+            parts.append(
+                f"Default check-in rhythm: every {b.min}–{b.max} min (never reveal this)"
+            )
+            if entry.verify_hint:
+                parts.append(f"Verify hint: {entry.verify_hint}")
+            if entry.guidance:
+                parts.append(f"Planner guidance (fine to share): {entry.guidance}")
         return "\n".join(parts)
 
     # --- speech gating (silence windows, day window, DND) ---
@@ -102,13 +137,17 @@ class ManagerEngine:
     # --- outbound ---
 
     async def say(self, directive_kind: str, task: dict | None, **fmt: object) -> None:
-        tone = (await self._tone())
-        task_slice = self._task_slice(task) if task else "(none)"
+        policy = await self.policy()
+        tone = policy.manager_style.tone if policy else self.cfg.manager.tone
+        entry = policy.entry_for(task["id"]) if (policy and task) else None
+        task_slice = self._task_slice(task, entry) if task else "(none)"
+        now = fmt_stamp(self.clock.dt(self.cfg.tz))
         tail = await self._chat_tail(8)
+        directive = f"[{now}] {prompts.directive(directive_kind, **fmt)}"
         text = await self.llm.text(
             self.cfg.manager_llm,
-            prompts.outbound_system(tone, task_slice),
-            tail + [{"role": "user", "content": prompts.directive(directive_kind, **fmt)}],
+            prompts.outbound_system(tone, task_slice, now, await memory_block(self.db)),
+            tail + [{"role": "user", "content": directive}],
         )
         if not text:
             raise RuntimeError("manager LLM returned an empty outbound message")
@@ -123,12 +162,19 @@ class ManagerEngine:
         return policy.manager_style.tone if policy else self.cfg.manager.tone
 
     async def _chat_tail(self, n: int) -> list[dict]:
-        rows = await self.db.recent_messages("manager", n)
-        return [
-            {"role": r["role"], "content": r["text"]}
-            for r in rows
-            if r["role"] in ("user", "assistant")
-        ]
+        """Chat history since the last context_reset marker (written on every replan),
+        with each user message stamped with its wall-clock time."""
+        since = await self.db.last_event_id("manager", "context_reset")
+        rows = await self.db.recent_messages("manager", n, since_id=since)
+        tail = []
+        for r in rows:
+            if r["role"] not in ("user", "assistant"):
+                continue
+            content = r["text"]
+            if r["role"] == "user":
+                content = f"[{fmt_stamp(datetime.fromtimestamp(r['ts'], self.cfg.tz))}] {content}"
+            tail.append({"role": r["role"], "content": content})
+        return tail
 
     # --- assignment ---
 
@@ -203,6 +249,25 @@ class ManagerEngine:
         delay = random.uniform(b.min * 60, b.max * 60)
         await self.scheduler.cancel(["checkin"])
         await self.scheduler.schedule_in("checkin", delay, {"task_id": entry.task_id})
+
+    async def set_next_checkin(self, minutes: int, reason: str = "") -> str:
+        """The Manager model's own override of the random rhythm (from its tool)."""
+        task_id = await self.current_task_id()
+        if task_id is None:
+            return "DENIED: no active task, there is no check-in to move."
+        clamped = max(CHECKIN_OVERRIDE_MIN, min(CHECKIN_OVERRIDE_MAX, minutes))
+        await self.scheduler.cancel(["checkin"])
+        await self.scheduler.schedule_in("checkin", clamped * 60, {"task_id": task_id})
+        await self.db.audit(
+            self.clock.now(), "manager", "checkin_override",
+            requested=minutes, minutes=clamped, reason=reason,
+        )
+        note = (
+            ""
+            if clamped == minutes
+            else f" ({minutes} clamped to the {CHECKIN_OVERRIDE_MIN}–{CHECKIN_OVERRIDE_MAX}min cap)"
+        )
+        return f"Next check-in in ~{clamped} minutes{note}. Do not announce the exact timing."
 
     # --- check-ins & escalation ---
 
@@ -407,11 +472,14 @@ class ManagerEngine:
 
     async def on_policy_changed(self) -> None:
         policy = await self.policy()
-        awaiting = bool(await self._get("awaiting", False))
-        escalation_attempt = int(await self._get("escalation_attempt", 0))
+        now = self.clock.now()
+        # Fresh conversational slate: the user just replanned, so pre-replan pings must
+        # not read as ignored asks. Drop the chat context and any escalation chain.
+        await self.db.add_message("manager", "event", "context_reset", now)
+        await self._set("awaiting", False)
+        await self._set("escalation_attempt", 0)
         await self.scheduler.cancel(MANAGER_TIMERS)
         task_id = await self.current_task_id()
-        now = self.clock.now()
         if policy is None:
             await self._clear_current()
             return
@@ -419,14 +487,7 @@ class ManagerEngine:
         task = await self.task_row(task_id) if task_id is not None else None
         if entry is not None and task is not None and task["status"] == "active":
             # in-flight task survives the replan: keep it seamlessly, re-derive timers
-            if awaiting:
-                await self.scheduler.schedule_in(
-                    "escalation",
-                    policy.escalation.backoff_for(escalation_attempt) * 60,
-                    {"task_id": task_id},
-                )
-            else:
-                await self._schedule_checkin(entry)
+            await self._schedule_checkin(entry)
             if entry.internal_deadline:
                 deadline = parse_local_dt(entry.internal_deadline, self.cfg.tz).timestamp()
                 if deadline > now:
