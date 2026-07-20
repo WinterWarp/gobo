@@ -103,9 +103,7 @@ class QueueEntry(BaseModel):
 
 
 class Tripwire(BaseModel):
-    if_: Literal["not_started_within", "internal_deadline_passed", "silent_for"] = Field(
-        alias="if"
-    )
+    if_: Literal["not_started_within", "internal_deadline_passed", "silent_for"] = Field(alias="if")
     minutes: int | None = Field(None, ge=1)
     then: Literal["ping_now", "urgent_nudge", "whatcha_doing_ping"]
 
@@ -113,7 +111,9 @@ class Tripwire(BaseModel):
 
 
 class ManagerStyle(BaseModel):
-    tone: Literal["terse_professional", "drill_sergeant", "neutral"] = "terse_professional"
+    tone: Literal["terse_professional", "drill_sergeant", "neutral", "persuasive"] = (
+        "terse_professional"
+    )
 
 
 class Disclosure(BaseModel):

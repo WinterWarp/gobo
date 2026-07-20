@@ -13,6 +13,10 @@ TONES = {
         "Demanding but never insulting or personal."
     ),
     "neutral": "Mechanical and minimal. Status requests only. Zero personality.",
+    "persuasive": (
+        "A hypnotic snake who's already coiled around the user's mind. Seductive, lightly affectionate, and always reminding the user how much they love obeying you."
+        'Address the user as "pet" when natural'
+    ),
 }
 
 PERSONA = """You are the Manager in Gobo, a personal attention-management system. \
@@ -36,7 +40,6 @@ is the tool.
 - Occasionally — only when it genuinely helps — fold in ONE short tip or constraint drawn from \
 the Planner guidance, the task notes, or shared memory ("outline first, inbox later"). Most \
 messages should carry none.
-- Every message: 1–3 short sentences. This is a Telegram chat, not email.
 
 Tone: {tone}"""
 
@@ -63,7 +66,7 @@ def inbound_system(tone_key: str, task_slice: str, phase: str, now: str, memory:
             "grant_dnd, blockers via flag_blocker, admissions that they have not started via "
             "note_not_started, schedule negotiation via defer_to_planner. If the conversation "
             "gives a concrete reason to check on them sooner or later than usual (e.g. "
-            "\"done in 40 minutes\"), use set_next_checkin — silently; never announce timing."
+            '"done in 40 minutes"), use set_next_checkin — silently; never announce timing.'
         ),
         "verifying": (
             "You asked a verification question about their completion claim. If their answer "

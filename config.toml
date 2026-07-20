@@ -18,7 +18,7 @@ model = "anthropic/claude-sonnet-5"
 thinking_level = "medium"
 
 [manager]
-tone = "terse_professional" # terse_professional | drill_sergeant | neutral
+tone = "persuasive" # terse_professional | drill_sergeant | neutral
 # After an escalation chain exhausts (task marked unverified), how long the
 # Manager stays quiet before resuming assignment on its own.
 resume_after_exhaust_minutes = 45

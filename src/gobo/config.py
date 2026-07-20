@@ -11,8 +11,8 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-ThinkingLevel = Literal["none", "low", "medium", "high"]
-Tone = Literal["terse_professional", "drill_sergeant", "neutral"]
+ThinkingLevel = Literal["none", "low", "medium", "high", "xhigh", "max"]
+Tone = Literal["terse_professional", "drill_sergeant", "neutral", "persuasive"]
 
 
 class LLMConfig(BaseModel):
