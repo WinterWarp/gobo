@@ -14,8 +14,8 @@ model = "anthropic/claude-fable-5"
 thinking_level = "high"            # none | low | medium | high
 
 [manager.llm]
-model = "anthropic/claude-fable-5"
-thinking_level = "low"
+model = "anthropic/claude-sonnet-5"
+thinking_level = "medium"
 
 [manager]
 tone = "terse_professional" # terse_professional | drill_sergeant | neutral
