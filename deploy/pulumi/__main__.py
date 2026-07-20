@@ -13,7 +13,7 @@ import pulumi_digitalocean as do
 config = pulumi.Config("gobo")
 repo_url = config.require("repoUrl")
 telegram_user_id = config.require("telegramUserId")
-ssh_public_key = config.require("sshPublicKey")
+ssh_key_name = config.require("sshKeyName")
 region = config.get("region") or "nyc3"
 size = config.get("size") or "s-1vcpu-1gb"
 
@@ -37,7 +37,7 @@ def render(args: list[str]) -> str:
 
 user_data = pulumi.Output.all(planner_token, manager_token, openrouter_key).apply(render)
 
-ssh_key = do.SshKey("gobo-key", public_key=ssh_public_key)
+ssh_key = do.get_ssh_key(name=ssh_key_name)
 
 droplet = do.Droplet(
     "gobo",
