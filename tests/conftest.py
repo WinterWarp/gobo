@@ -37,11 +37,13 @@ class FakeLLM:
 
     def __init__(self):
         self.directives: list[str] = []
+        self.systems: list[str] = []
         self.script: list[dict] = []
 
     async def text(self, cfg, system, messages) -> str:
         directive = messages[-1]["content"]
         self.directives.append(directive)
+        self.systems.append(system)
         return f"<out {len(self.directives)}>"
 
     async def tool_loop(self, cfg, system, messages, toolbox, max_rounds=8) -> str:
@@ -78,7 +80,6 @@ async def add_task(db, clock, title: str, **kw) -> int:
     cur = await db.execute(
         "INSERT INTO tasks (title, notes, stated_deadline, est_minutes, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
-        (title, kw.get("notes", ""), kw.get("stated_deadline"), kw.get("est_minutes"),
-         clock.now()),
+        (title, kw.get("notes", ""), kw.get("stated_deadline"), kw.get("est_minutes"), clock.now()),
     )
     return cur.lastrowid

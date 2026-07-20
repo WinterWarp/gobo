@@ -1,6 +1,6 @@
 """The Manager engine: executes the active policy off the timers table.
 
-Timer kinds owned here: assign, checkin, escalation, tripwire, dnd_end.
+Timer kinds owned here: assign, checkin, escalation, tripwire, dnd_end, plan_notice.
 State keys are namespaced "manager.*" in runtime_state."""
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 STALE_CHECKIN_SECONDS = 900  # a check-in overdue past this (e.g. downtime) is redrawn, not fired
 
-MANAGER_TIMERS = ["assign", "checkin", "escalation", "tripwire"]
+MANAGER_TIMERS = ["assign", "checkin", "escalation", "tripwire", "plan_notice"]
 
 # Bounds for the Manager's own set_next_checkin overrides, minutes.
 CHECKIN_OVERRIDE_MIN = 2
@@ -60,6 +60,7 @@ class ManagerEngine:
         self.scheduler.on("escalation", self.on_escalation)
         self.scheduler.on("tripwire", self.on_tripwire)
         self.scheduler.on("dnd_end", self.on_dnd_end)
+        self.scheduler.on("plan_notice", self.on_plan_notice)
 
     # --- state helpers ---
 
@@ -102,9 +103,7 @@ class ManagerEngine:
                     f"{entry.window.not_after or 'any'}"
                 )
             b = entry.checkin_interval_minutes
-            parts.append(
-                f"Default check-in rhythm: every {b.min}–{b.max} min (never reveal this)"
-            )
+            parts.append(f"Default check-in rhythm: every {b.min}–{b.max} min (never reveal this)")
             if entry.verify_hint:
                 parts.append(f"Verify hint: {entry.verify_hint}")
             if entry.guidance:
@@ -207,9 +206,7 @@ class ManagerEngine:
             await self._assign(policy, entry, task)
             return
         if wake is not None:
-            await self.scheduler.schedule(
-                "assign", wake.timestamp() + random.uniform(0, 60), {}
-            )
+            await self.scheduler.schedule("assign", wake.timestamp() + random.uniform(0, 60), {})
         else:
             await self.db.audit(self.clock.now(), "manager", "queue_exhausted")
 
@@ -224,9 +221,7 @@ class ManagerEngine:
             await self.say("assign", task)
         except Exception:
             # Leave the task eligible so the scheduler's retry can assign it again.
-            await self.db.execute(
-                "UPDATE tasks SET status = 'pending' WHERE id = ?", (task["id"],)
-            )
+            await self.db.execute("UPDATE tasks SET status = 'pending' WHERE id = ?", (task["id"],))
             await self._clear_current()
             raise
         await self.db.audit(now, "manager", "assigned", task_id=task["id"])
@@ -259,8 +254,12 @@ class ManagerEngine:
         await self.scheduler.cancel(["checkin"])
         await self.scheduler.schedule_in("checkin", clamped * 60, {"task_id": task_id})
         await self.db.audit(
-            self.clock.now(), "manager", "checkin_override",
-            requested=minutes, minutes=clamped, reason=reason,
+            self.clock.now(),
+            "manager",
+            "checkin_override",
+            requested=minutes,
+            minutes=clamped,
+            reason=reason,
         )
         note = (
             ""
@@ -321,9 +320,7 @@ class ManagerEngine:
 
     async def _exhaust(self, task_id: int) -> None:
         now = self.clock.now()
-        await self.db.execute(
-            "UPDATE tasks SET status = 'unverified' WHERE id = ?", (task_id,)
-        )
+        await self.db.execute("UPDATE tasks SET status = 'unverified' WHERE id = ?", (task_id,))
         await self._clear_current()
         await self.db.audit(now, "manager", "escalation_exhausted", task_id=task_id)
         await self.schedule_assign(self.cfg.manager.resume_after_exhaust_minutes * 60)
@@ -500,9 +497,33 @@ class ManagerEngine:
                 await self.db.execute(
                     "UPDATE tasks SET status = 'pending' WHERE id = ?", (task_id,)
                 )
+                # The user was actively expecting this task; the replan dropped it. Tell them
+                # so it doesn't read as a task they still owe. (Gated/deferred like any ping.)
+                await self.scheduler.schedule_in(
+                    "plan_notice",
+                    1,
+                    {"task_id": task_id, "title": task["title"], "notes": task.get("notes")},
+                )
             await self._clear_current()
             await self.schedule_assign(random.uniform(30, 90))
         await self.db.audit(now, "manager", "policy_reconciled", kept_task=entry is not None)
+
+    async def on_plan_notice(self, payload: dict, overdue: float) -> None:
+        """One-shot retraction: the replan dropped a task the user was expecting."""
+        policy = await self.policy()
+        if policy is None:
+            return
+        # If a later replan re-assigned this very task, there is nothing to retract.
+        if await self.current_task_id() == payload.get("task_id"):
+            return
+        if await self._gated_defer(policy, "plan_notice", payload):
+            return
+        task = {
+            "id": payload.get("task_id"),
+            "title": payload.get("title"),
+            "notes": payload.get("notes"),
+        }
+        await self.say("plan_changed", task)
 
     # --- boot recovery ---
 
@@ -529,9 +550,7 @@ class ManagerEngine:
         """For the Planner's get_manager_status tool."""
         task_id = await self.current_task_id()
         task = await self.task_row(task_id) if task_id else None
-        rows = await self.db.fetchall(
-            "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
-        )
+        rows = await self.db.fetchall("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status")
         dnd_until = float(await self._get("dnd_until", 0) or 0)
         return {
             "current_task": {"id": task_id, "title": task["title"]} if task else None,

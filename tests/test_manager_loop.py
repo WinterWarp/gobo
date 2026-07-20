@@ -305,6 +305,36 @@ async def test_replan_drops_in_flight_task(db, clock, cfg, scheduler, engine):
     assert await engine.current_task_id() == t2
 
 
+async def test_replan_announces_dropped_task(db, clock, cfg, scheduler, engine):
+    t1 = await add_task(db, clock, "write report")
+    t2 = await add_task(db, clock, "email accountant")
+    await activate(db, clock, engine, policy_dict([t1]))
+    clock.advance(120)
+    await scheduler.tick()
+    assert await engine.current_task_id() == t1
+    sent_before = len(engine.sent)
+
+    # replan drops t1: the Manager tells the user it is off their plate
+    await activate(db, clock, engine, policy_dict([t2]))
+    assert await scheduler.pending("plan_notice")
+    clock.advance(2)
+    await scheduler.tick()
+    assert len(engine.sent) == sent_before + 1
+    assert "no longer expected" in engine.fake_llm.directives[-1]
+    # the retracted task's title is surfaced to the outbound LLM
+    assert "write report" in engine.fake_llm.systems[-1]
+
+
+async def test_replan_keeps_task_sends_no_retraction(db, clock, cfg, scheduler, engine):
+    t1 = await add_task(db, clock, "write report")
+    await activate(db, clock, engine, policy_dict([t1]))
+    clock.advance(120)
+    await scheduler.tick()
+
+    await activate(db, clock, engine, policy_dict([t1]))  # task survives the replan
+    assert not await scheduler.pending("plan_notice")
+
+
 async def test_compile_rejects_bad_queue_refs(db, clock, cfg, scheduler, engine):
     t1 = await add_task(db, clock, "write report")
     await db.execute("UPDATE tasks SET status = 'unverified' WHERE id = ?", (t1,))

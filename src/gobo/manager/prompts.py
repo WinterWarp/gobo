@@ -114,6 +114,11 @@ DIRECTIVES = {
     ),
     "silent": "It has been quiet for a while. Ask what they are doing right now.",
     "resume": "You are resuming after a quiet period. Re-anchor them on the current task briefly.",
+    "plan_changed": (
+        "The plan just changed. The task you had them on — the one shown above — is no longer "
+        "expected of them. Tell them plainly and briefly that they can drop it; they do not need "
+        "to finish or report on it. Do NOT describe what replaces it or what comes next."
+    ),
 }
 
 
