@@ -104,9 +104,7 @@ async def test_assign_checkin_escalate_exhaust_then_resume(db, clock, cfg, sched
     assert await engine.current_task_id() == t2
 
 
-async def test_failed_assignment_delivery_rolls_back_and_retries(
-    db, clock, cfg, scheduler, engine
-):
+async def test_failed_assignment_delivery_rolls_back_and_retries(db, clock, cfg, scheduler, engine):
     t1 = await add_task(db, clock, "write report")
     original_text = engine.fake_llm.text
     attempts = 0
@@ -161,18 +159,22 @@ async def test_done_claim_verify_confirm_advances_queue(db, clock, cfg, schedule
     await scheduler.tick()
     assert await engine.current_task_id() == t1
 
-    engine.fake_llm.script.append({"tools": [("mark_done", {})], "text": "What's in the final doc?"})
+    engine.fake_llm.script.append(
+        {"tools": [("mark_done", {})], "text": "What's in the final doc?"}
+    )
     await handle_user_message(engine, "done with the report")
     assert await engine.phase() == "verifying"
 
     engine.fake_llm.script.append({"tools": [("confirm_done", {})], "text": "Good."})
+    sent_before = len(engine.sent)
     await handle_user_message(engine, "three sections plus the appendix, sent to Jim")
     row = await db.fetchone("SELECT status, completed_at FROM tasks WHERE id = ?", (t1,))
     assert row["status"] == "done" and row["completed_at"] is not None
 
-    clock.advance(200)
-    await scheduler.tick()
+    # the next task is handed out in the same turn — ack, then assignment, no timer wait
     assert await engine.current_task_id() == t2
+    assert len(engine.sent) == sent_before + 2  # completion ack + the new assignment
+    assert "Assign the current task" in engine.fake_llm.directives[-1]
 
 
 async def test_dnd_grants_are_bounded(db, clock, cfg, scheduler, engine):
@@ -184,7 +186,7 @@ async def test_dnd_grants_are_bounded(db, clock, cfg, scheduler, engine):
     assert (await engine.grant_dnd(200)).startswith("DENIED")  # over per-grant cap
     assert (await engine.grant_dnd(60)).startswith("GRANTED")
     assert (await engine.grant_dnd(30)).startswith("GRANTED")
-    assert (await engine.grant_dnd(10)).startswith("DENIED")   # daily grant count spent
+    assert (await engine.grant_dnd(10)).startswith("DENIED")  # daily grant count spent
 
     # while DND is active the check-in gate defers instead of pinging
     sent_before = len(engine.sent)
@@ -267,9 +269,7 @@ async def test_replan_resets_escalation_and_chat_context(db, clock, cfg, schedul
     assert await engine._chat_tail(20) == []  # context restarts at the reset marker
 
 
-async def test_unrelated_message_does_not_confirm_task_started(
-    db, clock, cfg, scheduler, engine
-):
+async def test_unrelated_message_does_not_confirm_task_started(db, clock, cfg, scheduler, engine):
     t1 = await add_task(db, clock, "write report")
     await activate(db, clock, engine, policy_dict([t1]))
     clock.advance(120)

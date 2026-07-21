@@ -444,7 +444,11 @@ class ManagerEngine:
             )
             await self.db.audit(now, "manager", "task_done", task_id=task_id)
         await self._clear_current()
-        await self.schedule_assign(random.uniform(60, 180))
+        # The inbound handler hands out the next task inline, in the same turn as the
+        # completion ack (see agent.handle_user_message). This timer is only a safety
+        # net: it fires soon and no-ops once that inline pass has assigned, but recovers
+        # the loop if the inline pass failed to.
+        await self.schedule_assign(random.uniform(5, 12))
 
     async def note_user_activity(self) -> None:
         """Every inbound user message: clears any pending escalation, reschedules rhythm."""

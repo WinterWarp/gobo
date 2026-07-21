@@ -3,11 +3,15 @@ with only the tools valid for the current phase."""
 
 from __future__ import annotations
 
+import logging
+
 from ..llm import Toolbox
 from ..memory import add_memory_tools, memory_block
 from ..models import fmt_stamp
 from . import prompts
 from .loop import ManagerEngine
+
+log = logging.getLogger(__name__)
 
 _MINUTES_PARAM = {
     "type": "object",
@@ -46,8 +50,7 @@ def build_toolbox(engine: ManagerEngine, phase: str, verify_hint: str | None) ->
             hint = f" Verification hint from the plan: {verify_hint}." if verify_hint else ""
             return (
                 "Completion claim recorded, not yet confirmed. Ask exactly ONE concrete "
-                "verification question about the work — conversational, not forensic."
-                + hint
+                "verification question about the work — conversational, not forensic." + hint
             )
 
         async def note_progress(args: dict) -> str:
@@ -184,3 +187,11 @@ async def handle_user_message(engine: ManagerEngine, text: str) -> None:
     reply = await engine.llm.tool_loop(engine.cfg.manager_llm, system, tail, toolbox)
     if reply:
         await engine._deliver(reply)
+    # If this turn confirmed the current task done (the only inbound path that clears
+    # the current task), hand out the next one right away — same turn, right after the
+    # ack — instead of leaving the user waiting on the fallback assign timer.
+    if task_id is not None and await engine.current_task_id() is None:
+        try:
+            await engine.on_assign({}, 0.0)
+        except Exception:
+            log.exception("inline post-completion assign failed; fallback timer will retry")
